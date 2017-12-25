@@ -12,6 +12,7 @@ class TreeNode:
 		self.childrenDic = {}
 		self.length = 0
 
+
 	def addChild(self, word):
 		if word in self.childrenDic:
 			return self.children[self.childrenDic[word]]
@@ -19,6 +20,7 @@ class TreeNode:
 		child = TreeNode()
 		self.children.append(child)
 		return child
+
 
 	def getChild(self, word):
 		if word not in self.childrenDic:
@@ -29,6 +31,7 @@ class TreeNode:
 class PrefixTree:
 	def __init__(self):
 		self.root = TreeNode()
+
 
 	def is_valid_word(self, word, filtering_stop_words=False):
 		if filtering_stop_words and word.lower() in STOP_WORDS:
@@ -43,65 +46,112 @@ class PrefixTree:
 				return False
 			return True
 
+
 	def segmentWords(self, sentence, filtering_stop_words=False):
 		sentence = re.sub(r'[^\x00-\x7F]', ' ', sentence)
 		#sentence = re.sub(r'\(.*?\)', ' ', sentence)
 		words = nltk.word_tokenize(sentence)
 		return [w for w in words if self.is_valid_word(w, filtering_stop_words)]
 
-	def addTerm(self, term):
-		words = self.segmentWords(term)
+
+	def addTerm(self, term, raw_segment=False):
+		words = term.strip().split(' ') if raw_segment else self.segmentWords(term)
 		node = self.root
 		for word in words:
 			node = node.addChild(word)
 		node.length = len(words)
 
-	def startsWithIsTerm(self, words):
-		node = self.root
-		for i in range(len(words)):
-			node = node.getChild(words[i])
-			if node == None:
-				return False, False
-		return True, len(words) == node.length
 		
-	def getTermSegments(self, words, find_longest=True):
+	def getTermSegments(self, words, reg_match=False, find_longest=True):
 		seg_pairs = []
 		length = len(words)
+		star_pos = []
 		for i in range(length):
 			node = self.root
+			cur_star_pos = []
 			for j in range(i, length):
-				node = node.getChild(words[j])
+				if not reg_match:
+					node = node.getChild(words[j])
+				else:
+					child = node.getChild(words[j])
+					if child == None:
+						node = node.getChild('*')
+						if node != None:
+							cur_star_pos.append(j)
+					else:
+						node = child
 				if node == None:
 					break
 				if j - i + 1 == node.length and (not find_longest or j == length - 1 or node.getChild(words[j+1]) == None):
 					seg_pairs.append((i, j))
-		return seg_pairs
+					if reg_match:
+						star_pos.append(cur_star_pos)
+		return seg_pairs, star_pos
 
 
 class PhraseExtractor:
-	def __init__(self, phrase_set):
+	def __init__(self, phrase_set, reg_match=False, raw_segment=False):
 		self.ptree = PrefixTree()
 		self.type_dict = {}
+		self.reg_match = reg_match
 		for phrase in phrase_set:
-			self.ptree.addTerm(phrase)
+			self.ptree.addTerm(phrase, raw_segment)
 			self.type_dict[' '.join(self.ptree.segmentWords(phrase))] = 'ENT'
 		if type(phrase_set) == type(dict()):
 			self.addTypeDict(phrase_set)
+
 
 	def addTypeDict(self, type_dict):
 		for ent, typ in type_dict.iteritems():
 			ent = ' '.join(self.ptree.segmentWords(ent))
 			self.type_dict[ent] = typ.upper()
+
 	
 	def getTerm(self, text, find_longest=True):
 		sentences = nltk.sent_tokenize(text)
 		terms = []
 		for sentence in sentences:
 			words = self.ptree.segmentWords(sentence)
-			seg_pairs = self.ptree.getTermSegments(words, find_longest)
-			for start, end in seg_pairs:
-				terms.append(' '.join(words[start:end+1]))
+			seg_pairs, star_pos = self.ptree.getTermSegments(words, self.reg_match, find_longest)
+			for i in range(len(seg_pairs)):
+				start, end = seg_pairs[i]
+				if star_pos == []:
+					terms.append(' '.join(words[start:end+1]))
+				else:
+					sent_words = []
+					cur_star_pos = set(star_pos[i])
+					for j in range(start, end + 1):
+						if j in cur_star_pos:
+							sent_words.append('*')
+						else:
+							sent_words.append(words[j])
+					terms.append(' '.join(sent_words))
 		return terms
+
+
+	def extract_entity_and_replace_with_type(self, text, only_keep_sentence_with_ent=False, find_longest=True):
+		sentences = nltk.sent_tokenize(text)
+		replaced_sentences = []
+		for sentence in sentences:
+			ori_words = self.ptree.segmentWords(sentence)
+			seg_pairs, _ = self.ptree.getTermSegments(ori_words, self.reg_match, find_longest)
+			if seg_pairs == []:
+				if only_keep_sentence_with_ent:
+					continue
+				replaced_sentences.append(sentence)
+				continue
+			words = []
+			pre_start = 0
+			for start, end in seg_pairs:
+				if start > pre_start:
+					words.extend([word.lower() for word in ori_words[pre_start: start]])
+				words.append(self.type_dict[' '.join(ori_words[start:end+1])])
+				pre_start = end + 1
+			if pre_start < len(ori_words):
+				words.extend([word.lower() for word in ori_words[pre_start:]])
+			replaced_sentences.append(' '.join(words))
+		return replaced_sentences
+
 
 	def getContextualPhrases(
 		self,
@@ -188,7 +238,7 @@ class PhraseExtractor:
 		contexts = []
 		for sentence in sentences:
 			words = self.ptree.segmentWords(sentence, filtering_stop_words)
-			seg_pairs = self.ptree.getTermSegments(words, find_longest)
+			seg_pairs, _ = self.ptree.getTermSegments(words, self.reg_match, find_longest)
 			if len(seg_pairs) == 0:
 				continue
 			for start, end in seg_pairs:
@@ -207,15 +257,34 @@ class PhraseExtractor:
 if __name__=='__main__':
 	#terms = ['white house', 'new york times', 'new york']
 	#s = 'new york times publish a new article about white house, and the article is very popular in new york. This is from new york times today'
-	terms = ['10,000 B.C.', '10th &amp; Wolf']
-	s = 'The news said that 10,000 B.C. will take your money. 10th &amp; Wolf is a good movie'
+	terms = {'10,000 B.C.': 'MV', '10th &amp; Wolf':'MV'}
+	s = 'The news said that 10,000 B.C. will take your money. 10th &amp; Wolf is a good movie. I heard that 10th &amp; Wolf is a good movie'
 	extractor = PhraseExtractor(terms)
 	tms = extractor.getTerm(s)
-	print s
-	print tms
+	print 'sentence is: ', s
+	print 'extracted term in sentences:', tms
+	only_keep_sent_with_ent = True
 	context_window = 2
 	max_window = 5
 	contexts = extractor.getContext(s, context_window, context_window)
-	print contexts
+	print 'adajcent contexts:', contexts
 	contexts1 = extractor.getContext(s, context_window, max_window, True)
-	print contexts1
+	print 'non_adjacent contexts:', contexts1
+	
+	rep_sents = extractor.extract_entity_and_replace_with_type(s, only_keep_sent_with_ent)
+	print '\nreplace ent type in sentence:', rep_sents
+	context_terms = ['MV a good movie', 'MV * a good movie', 'MV * * good movie', 'I heard * MV * a good', 'heard * MV * a good movie']
+	print 'match context:', context_terms
+	extractor1 = PhraseExtractor(context_terms, reg_match=True, raw_segment=True)
+	contexts2 = [extractor1.getTerm(sent) for sent in rep_sents]
+	print 'context after replace:', contexts2 
+
+	sent1 = 'A competent horror yarn filmed in eye-catching Aussie outback locations.'
+	rep_extractor = PhraseExtractor({'yarn': 'STR', 'filmed in': 'FMIN'})
+	sent1 = rep_extractor.extract_entity_and_replace_with_type(sent1, only_keep_sentence_with_ent=True)
+	context_terms1 = ['a * * STR * * * * locations']
+	extractor2 = PhraseExtractor(context_terms1, reg_match=True, raw_segment=True)
+	contexts3 = extractor2.getTerm(sent1[0])
+	print 'sent1:', sent1
+	print 'extractor2:', context_terms1
+	print 'contexts in sent1', contexts3 
