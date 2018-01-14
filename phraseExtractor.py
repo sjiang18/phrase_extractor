@@ -61,31 +61,58 @@ class PrefixTree:
 			node = node.addChild(word)
 		node.length = len(words)
 
-		
+	
 	def getTermSegments(self, words, reg_match=False, find_longest=True):
 		seg_pairs = []
 		length = len(words)
 		star_pos = []
-		for i in range(length):
-			node = self.root
-			cur_star_pos = []
-			for j in range(i, length):
-				if not reg_match:
+		if not reg_match:
+			for i in range(length):
+				node = self.root
+				for j in range(i, length):
 					node = node.getChild(words[j])
-				else:
-					child = node.getChild(words[j])
-					if child == None:
-						node = node.getChild('*')
-						if node != None:
-							cur_star_pos.append(j)
-					else:
-						node = child
-				if node == None:
-					break
-				if j - i + 1 == node.length and (not find_longest or j == length - 1 or node.getChild(words[j+1]) == None):
-					seg_pairs.append((i, j))
-					if reg_match:
-						star_pos.append(cur_star_pos)
+					if node == None:
+						break
+					if j - i + 1 == node.length and (not find_longest or j == length - 1 or node.getChild(words[j+1]) == None):
+						seg_pairs.append((i, j))
+			return seg_pairs, star_pos
+		for i in range(length):
+			nodes = [self.root]
+			local_star_pos = [[]]
+			for j in range(i, length):
+				cur_nodes = []
+				cur_star_pos = []
+				for k in range(len(nodes)):
+					child = nodes[k].getChild(words[j])
+					if child != None:
+						cur_nodes.append(child)
+						cur_star_pos.append(local_star_pos[k])
+						if j - i + 1 == child.length:
+							if not find_longest or j == length - 1 or child.getChild(words[j+1]) == None:
+								seg_pairs.append((i, j))
+								star_pos.append(local_star_pos[k])
+								if not find_longest:
+									continue
+								else:
+									break
+					star_child = nodes[k].getChild('*')
+					if star_child != None:
+						cur_nodes.append(star_child)
+						temp_star_pos = [x for x in local_star_pos[k]]
+						temp_star_pos.append(j)
+						cur_star_pos.append(temp_star_pos)
+					if child == None and star_child == None:
+						continue
+					elif star_child != None and j - i + 1 == star_child.length:
+						if not find_longest or j == length - 1 or child.getChild(words[j+1]) == None:
+							seg_pairs.append((i, j))
+							star_pos.append(cur_star_pos[k])
+							if not find_longest:
+								continue
+							else:
+								break
+				nodes = cur_nodes
+				local_star_pos = cur_star_pos
 		return seg_pairs, star_pos
 
 
